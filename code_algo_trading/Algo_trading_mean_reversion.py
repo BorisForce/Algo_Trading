@@ -10,6 +10,7 @@ tickers = ['KO', 'PEP']
 start_date = '2020-01-01'
 end_date = '2024-12-31'
 data = yf.download(tickers, start=start_date, end=end_date)
+print(data)
 data_close = data['Close'].dropna()
 print(data_close)
 
@@ -29,7 +30,7 @@ rolling_hedge = rolling_hedge.shift(1)
 
 # 4. Spread & Z-score
 spread = data_close['KO'] - rolling_hedge * data_close['PEP']
-spread = spread.dropna()
+spread = spread.dropna() 
 zscore = (spread - spread.rolling(window).mean()) / spread.rolling(window).std()
 
 # 5. Trading Logic
