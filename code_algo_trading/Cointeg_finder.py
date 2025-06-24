@@ -9,7 +9,7 @@ end_date   = '2025-01-01'
 
 records = pd.DataFrame()
 for sector in all_sector_stocks: 
-    time.sleep(2)
+    time.sleep(1)
     for ticker in all_sector_stocks[sector]: 
         df = yf.download(tickers=ticker, start=start_date, end=end_date)['Close'] 
         records = pd.concat([records, df], axis=1)
@@ -18,8 +18,8 @@ records = records.dropna(axis=1, thresh=int(0.9* len(records)))
 cointegration_results = [] 
 
 for stock1, stock2 in combinations(records.columns, 2): 
-    series1 = records[stock1].dropna() 
-    series2 = records[stock2].dropna() 
+    series1 = records[stock1]
+    series2 = records[stock2] 
     combined = pd.concat([series1, series2], axis=1).dropna() 
     if len(combined)> 100:
         score, pvalue, _= coint(combined.iloc[:, 0], combined.iloc[:, 1]) 
