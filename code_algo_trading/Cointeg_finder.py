@@ -1,17 +1,18 @@
 import yfinance as yf
 import pandas as pd
 import time
-from Utilities import all_sector_stocks
+from Utilities import all_sector_stocks, test_stocks 
 from itertools import combinations 
 from statsmodels.tsa.stattools import coint
 import numpy as np
 import statsmodels.api as sm 
 import matplotlib.pyplot as plt 
+
 start_date = '2020-01-01'
 end_date   = '2025-01-01'
 
 records = pd.DataFrame()
-for sector in all_sector_stocks: 
+for sector in test_stocks: 
     time.sleep(1)
     for ticker in all_sector_stocks[sector]: 
         df = yf.download(tickers=ticker, start=start_date, end=end_date)['Close'] 
@@ -41,6 +42,22 @@ def hurst_exponent(ts):
     tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
     poly = np.polyfit(np.log(lags), np.log(tau), 1) 
     return poly[0] 
+
+def calculate_metrics(df): 
+    daily_returns = df['returns'].dropna() 
+    if len(daily_returns) <2:
+        return np.nan, np.nan, np.nan
+    
+    sharpe_ratio = np.sqrt(252) * daily_returns.mean()/ daily_returns.std() 
+
+    cum_returns = df['cum_returns'] 
+    rolling_max = cum_returns.cummax() 
+    drawdown = (cum_returns - rolling_max)/ rolling_max 
+    max_drawdown = drawdown.min() 
+
+    trade_duration = (df['position'] !=0).sum() 
+
+    return sharpe_ratio, max_drawdown, trade_duration
 
 cointegration_pairs = cointegration_results_df[cointegration_results_df['p-value'] < 0.05].copy() 
 filter_results =[] 
@@ -119,16 +136,44 @@ for pair in filtered_pairs:
     try:
         df_trading = simulate_pair_trading(pair['Stock 1'], pair['Stock 2'], records)
         final_return = df_trading['cum_returns'].iloc[-1]
+        sharpe, max_dd, duration = calculate_metrics(df_trading)
         performance.append({
             'Stock 1': pair['Stock 1'],
             'Stock 2': pair['Stock 2'],
             'Final Return': final_return,
+            'Sharpe Ratio': sharpe, 
+            'Max drawdown': max_dd, 
+            'Trade duration': duration,
             'Data': df_trading
         })
-    except Exception as e:
-        print(f"Failed for {pair['Stock 1']} & {pair['Stock 2']}: {e}")
+    except Exception as e: 
+        print(f"Failed for {pair['Stock 1']} & {pair['Stock 2']}: {e}") 
 
-# Step 4: Pick the best performing one
+# After performance is collected
+if performance:
+    summary = pd.DataFrame([{
+        'Stock 1': p['Stock 1'],
+        'Stock 2': p['Stock 2'],
+        'Final Return': round(p['Final Return'], 2),
+        'Sharpe Ratio': round(p['Sharpe Ratio'], 2),
+        'Max Drawdown': round(p['Max drawdown'], 2),
+        'Trade Duration': p['Trade duration']
+    } for p in performance])
+
+    summary = summary.sort_values(by='Sharpe Ratio', ascending=False)
+
+    print("\n=== Backtest Summary ===")
+    print(summary.to_string(index=False))
+
+    # pick best based on Sharpe ratio or your preferred metric
+    best = performance[summary.index[0]]
+else:
+    print("No valid trading pairs passed filtering and backtesting.")
+    exit()
+ 
+# Step 4: Pick the best performing one 
+
+
 best = sorted(performance, key=lambda x: -x['Final Return'])[0]
 
 # Step 5: Plot
