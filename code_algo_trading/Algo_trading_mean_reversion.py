@@ -107,78 +107,114 @@ def evaluate(df):
 
 #--------------------------------
 # 4) Sequential feed‐forward
-#--------------------------------
-def run_sequential(prices, train_start, train_end,
-                   pval_thresh=0.05, hurst_thresh=0.41, hl_bounds=(5,40),
-                   z_entry_grid=(0.8,1.0,1.2), z_exit_grid=(0.0,0.2)):
-    # initial train slice
-    train = prices.loc[train_start:train_end]
-    # screen & filter once
-    coint_df = screen_cointegrated_pairs(train, pval_thresh)
-    filt_df  = filter_pairs(train, coint_df, hurst_thresh, hl_bounds)
+#-------------------------------- 
+def run_sequential(prices, 
+                   initial_start, 
+                   train_duration = timedelta(days=252*2), 
+                   pval_thresh = 0.05, 
+                   hurst_thresh = 0.41, 
+                   hl_bounds =(5,40), 
+                   z_entry_grid = [0.8, 1.0, 1.2], 
+                   z_exit_grid = [0.0, 0.2 ]): 
+    
+    results = [] 
+    test_start = initial_start + train_duration 
+    end_date = prices.index.max() 
 
-    # optimize thresholds in-sample for each pair
-    bests = []
-    for _, r in filt_df.iterrows():
-        best_sh, best_thr = -np.inf, None
-        for ze, zx in product(z_entry_grid, z_exit_grid):
-            df_is = simulate_pair(r['Stock 1'], r['Stock 2'], train, ze, zx)
-            sh, _, _ = evaluate(df_is)
-            if sh > best_sh:
-                best_sh, best_thr = sh, (ze, zx)
-        bests.append({'Stock 1': r['Stock 1'],
-                      'Stock 2': r['Stock 2'],
-                      'Thresholds': best_thr,
-                      'IS Sharpe': best_sh})
+    while test_start < end_date: 
+        train_start = test_start - train_duration 
+        train_end = test_start 
+        train = prices.loc[train_start:train_end] 
 
-    bests_df = pd.DataFrame(bests).sort_values('IS Sharpe', ascending=False)
-    # pick the single best pair + thresholds
-    best_pair = bests_df.iloc[0]
+        coint_df = screen_cointegrated_pairs(train, pval_thresh) 
+        filt_df = filter_pairs(train, coint_df, hurst_thresh=hurst_thresh, hl_bounds=hl_bounds) 
 
-    # now simulate sequentially on the remaining data
-    results = []
-    test_start = train_end
-    end_date   = prices.index.max()
+        candidates = [] 
+        for _, r in filt_df.iterrows(): 
+            s1, s2 = r['Stock 1'], r['Stock 2'] 
+            best_sh, best_thr = -np.inf, None 
+            for ze, zx in product(z_entry_grid, z_exit_grid): 
+                df_sim = simulate_pair(s1, s2, train, ze, zx) 
+                sh, _, _ = evaluate(df_sim) 
+                if sh > best_sh: 
+                    best_sh = sh 
+                    best_thr = (ze, zx) 
+            if best_thr: 
+                candidates.append({
+                    'Stock 1': s1, 
+                    'Stock 2': s2, 
+                    'Thresholds': best_thr, 
+                    'IS Sharpe': best_sh
+                }) 
 
-    while test_start < end_date:
-        # simulate live until closure
-        df_oos = simulate_pair(best_pair['Stock 1'],
-                               best_pair['Stock 2'],
-                               prices.loc[test_start:],
-                               *best_pair['Thresholds'])
-        # find first return to flat after entry
-        pts = df_oos.index[df_oos['position'].diff() != 0]
-        if len(pts) >= 2:
-            close_dt = pts[1]
-            df_segment = df_oos.loc[:close_dt]
-        else:
-            df_segment = df_oos
+        ranked = sorted(candidates, key=lambda x: x['IS Sharpe'], reverse=True) 
+        found = False 
 
-        sh, dd, dur = evaluate(df_segment)
-        results.append({
-            'Start':       test_start,
-            'End':         df_segment.index[-1],
-            'Stock 1':     best_pair['Stock 1'],
-            'Stock 2':     best_pair['Stock 2'],
-            'Thresholds':  best_pair['Thresholds'],
-            'OOS Sharpe':  sh,
-            'OOS DD':      dd,
-            'OOS Return':  df_segment['cum_returns'].iloc[-1],
-            'Duration':    dur,
-            'History':     df_segment.copy()
-        })
+        for cand in ranked: 
+            s1, s2 = cand['Stock 1'], cand['Stock 2'] 
+            ze, zx = cand['Thresholds']
+            df_oos = simulate_pair(s1 , s2, prices.loc[test_start:], ze, zx) 
 
-        # advance to next
-        test_start = df_segment.index[-1]
+            if abs(df_oos['zscore'].iloc[0]) >= ze: 
+                change_pts = df_oos.index[df_oos['position'].diff() != 0] 
+                if len(change_pts) >= 2: 
+                    close_dt = change_pts[1] 
+                    df_segment = df_oos.loc[:close_dt] 
+                else: 
+                    df_segment = df_oos.copy() 
+
+                sh, dd, dur = evaluate(df_segment) 
+                results.append({
+                    'Start': test_start, 
+                    'End': df_segment.index[-1], 
+                    'Stock 1': s1, 
+                    'Stock 2': s2, 
+                    'Thresholds': (ze, zx), 
+                    'OOS Sharpe': sh, 
+                    'OOS DD': dd, 
+                    'OOS Return': df_segment['cum_returns'].iloc[-1], 
+                    'Duration': dur, 
+                    'History': df_segment.copy()
+                }) 
+
+                cumulative = np.cumprod([r['OOS Return'] for r in results])
+                print(results[-1]['Start'], results[-1]['End'], results[-1]['OOS Return'], cumulative[-1])
+
+                test_start = df_segment.index[-1] 
+                found = True 
+                break 
+        
+        if not found:
+            test_start += timedelta(days=1)
 
     return results
 
 def plot_equity(results):
-    # stitch all daily returns
     all_rets = pd.concat([r['History']['returns'] for r in results]).sort_index()
     eq = (1 + all_rets).cumprod()
-    eq.plot(title='Strategy Equity Curve', figsize=(10,4))
+
+    # Calculate drawdown
+    peak = eq.cummax()
+    dd = (eq - peak) / peak
+
+    # Plot equity and drawdown
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
+    
+    ax1.plot(eq, label='Equity Curve')
+    ax1.set_ylabel('Cumulative Return')
+    ax1.legend()
+    ax1.grid(True)
+    
+    ax2.plot(dd, color='red', label='Drawdown')
+    ax2.set_ylabel('Drawdown')
+    ax2.set_xlabel('Date')
+    ax2.legend()
+    ax2.grid(True)
+    
+    plt.suptitle('Strategy Equity and Drawdown')
+    plt.tight_layout()
     plt.show()
+
 
 #--------------------------------
 # 5) Main
@@ -197,7 +233,7 @@ if __name__ == "__main__":
     train_end   = train_start + train_duration
 
     # 4) run sequential feed-forward
-    results = run_sequential(all_prices, train_start, train_end)
+    results = run_sequential(all_prices, initial_start= train_start)
 
     # 5) summary
     summary = pd.DataFrame([{
