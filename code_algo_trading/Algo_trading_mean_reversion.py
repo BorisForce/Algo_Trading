@@ -98,7 +98,7 @@ def simulate_pair(s1, s2, prices, z_entry, z_exit):
 
 def evaluate(df):
     rets = df['returns'].dropna()
-    if len(rets) < 2:
+    if len(rets) < 2 or rets.std() == 0 or (df['position'] == 0).all():
         return np.nan, np.nan, np.nan
     sharpe   = np.sqrt(252) * rets.mean() / rets.std()
     dd       = (df['cum_returns'] - df['cum_returns'].cummax()) / df['cum_returns'].cummax()
@@ -115,7 +115,9 @@ def run_sequential(prices,
                    hurst_thresh = 0.41, 
                    hl_bounds =(5,40), 
                    z_entry_grid = [0.8, 1.0, 1.2], 
-                   z_exit_grid = [0.0, 0.2 ]): 
+                   z_exit_grid = [0.0, 0.2 ], 
+                   max_hold_days = 40, 
+                   min_hold_days = 3): 
     
     results = [] 
     test_start = initial_start + train_duration 
@@ -160,15 +162,22 @@ def run_sequential(prices,
                 if len(change_pts) >= 2: 
                     close_dt = change_pts[1] 
                     df_segment = df_oos.loc[:close_dt] 
+                    if (df_segment.index[-1] - df_segment.index[0]).days < min_hold_days:
+                        continue 
+                    if (df_segment.index[-1] - df_segment.index[0]).days > max_hold_days: 
+                        df_segment = df_oos.iloc[:max_hold_days]
+
                 else: 
                     df_segment = df_oos.copy() 
 
                 sh, dd, dur = evaluate(df_segment) 
+                if np.isnan(sh) or dur is None or dur ==0:
+                    continue
                 results.append({
                     'Start': test_start, 
                     'End': df_segment.index[-1], 
                     'Stock 1': s1, 
-                    'Stock 2': s2, 
+                    'Stock 2':  2, 
                     'Thresholds': (ze, zx), 
                     'OOS Sharpe': sh, 
                     'OOS DD': dd, 
@@ -221,12 +230,12 @@ def plot_equity(results):
 #--------------------------------
 if __name__ == "__main__":
     # 1) download
-    prices = fetch_price_data(all_sector_stocks, start_date, 
+    prices = fetch_price_data( test_stocks, start_date, 
                               (pd.to_datetime(start_date) + train_duration).strftime('%Y-%m-%d'),
                               min_data_thresh)
 
     # 2) full data for live sim
-    all_prices = fetch_price_data(all_sector_stocks, start_date, end_date, min_data_thresh)
+    all_prices = fetch_price_data( test_stocks, start_date, end_date, min_data_thresh)
 
     # 3) train slice boundaries
     train_start = pd.to_datetime(start_date)
